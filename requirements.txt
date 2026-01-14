@@ -1,7 +1,5 @@
-pandas
+pandas<2.0
 numpy
-openslide-bin
-openslide-python
 pillow
 torch
 torchvision
