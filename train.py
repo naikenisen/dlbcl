@@ -241,7 +241,7 @@ for epoch in range(num_epochs):
     
     valid_maes.append(mae)
     
-    print(f'Validation MAE: {mae:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}')
+    print(f'Validation MAE: {mae:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}')
     
     # Scheduler
     scheduler.step(mae)

@@ -18,3 +18,6 @@ alias venv='module load python && source venv/bin/activate
                                && export WANDB_CACHE_DIR=/work/imvia/in156281/.cache/wandb 
                                && export WANDB_CONFIG_DIR=/work/imvia/in156281/.config/wandb'
 ```
+
+## Same github repo but on lung cancer
+https://github.com/DeepMicroscopy/Cox_AMIL?tab=readme-ov-file
