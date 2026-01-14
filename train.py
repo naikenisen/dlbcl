@@ -1,193 +1,291 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets,  models
+from torch.utils.data import Dataset, DataLoader
+from torchvision import models
 from torchvision.transforms import v2
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import confusion_matrix, f1_score
-import seaborn as sns
+import pandas as pd
+from pathlib import Path
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hyperparameters
-batch_size = 64
-learning_rate = 0.001
+batch_size = 8  # Augmenté car ResNet est plus efficace que ViT
+learning_rate = 0.0001
 num_epochs = 100
-num_classes = 2
 
-# Define transforms for training and validation
+
+class OSDataset(Dataset):
+    """Dataset personnalisé pour la prédiction de l'Overall Survival"""
+    
+    def __init__(self, image_paths, os_values, transform=None, max_size=512):
+        self.image_paths = image_paths
+        self.os_values = os_values
+        self.transform = transform
+        self.max_size = max_size
+        
+    def __len__(self):
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx):
+        # Charger l'image
+        img = Image.open(self.image_paths[idx]).convert('RGB')
+        
+        # Redimensionner proportionnellement si trop grande (pour mémoire GPU)
+        w, h = img.size
+        if max(w, h) > self.max_size:
+            ratio = self.max_size / max(w, h)
+            new_w, new_h = int(w * ratio), int(h * ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+        
+        # Appliquer les transformations
+        if self.transform:
+            img = self.transform(img)
+            
+        # Récupérer la valeur OS
+        os_value = torch.tensor(self.os_values[idx], dtype=torch.float32)
+        
+        return img, os_value
+
+
+# Fonction de collate pour gérer des tailles d'images variables
+def collate_fn(batch):
+    """Padding des images pour avoir la même taille dans un batch"""
+    images, targets = zip(*batch)
+    
+    # Trouver les dimensions maximales
+    max_h = max([img.shape[1] for img in images])
+    max_w = max([img.shape[2] for img in images])
+    
+    # Padding des images
+    padded_images = []
+    for img in images:
+        c, h, w = img.shape
+        padded = torch.zeros((c, max_h, max_w))
+        padded[:, :h, :w] = img
+        padded_images.append(padded)
+    
+    return torch.stack(padded_images), torch.stack(targets)
+
+
+# Charger les données cliniques
+clinical_data = pd.read_csv('clinical_data.csv')
+
+# Récupérer tous les fichiers images
+image_dir = Path('dataset')
+image_files = list(image_dir.glob('*.png'))
+
+# Créer un mapping patient_id -> OS
+patient_os_map = dict(zip(clinical_data['patient_id'], clinical_data['OS']))
+
+# Filtrer les images qui ont une valeur OS disponible
+valid_images = []
+os_values = []
+
+for img_path in image_files:
+    # Extraire le patient_id du nom de fichier (ex: "17658.png" ou "17658_2.png")
+    patient_id = int(img_path.stem.split('_')[0])
+    
+    if patient_id in patient_os_map:
+        os_val = patient_os_map[patient_id]
+        # Vérifier que la valeur OS n'est pas NaN
+        if pd.notna(os_val):
+            valid_images.append(str(img_path))
+            os_values.append(float(os_val))
+
+print(f"Nombre d'images avec données OS: {len(valid_images)}")
+print(f"OS min: {min(os_values):.2f}, OS max: {max(os_values):.2f}, OS moyen: {np.mean(os_values):.2f}")
+
+# Split train/validation
+train_imgs, valid_imgs, train_os, valid_os = train_test_split(
+    valid_images, os_values, test_size=0.2, random_state=42
+)
+
+print(f"Train: {len(train_imgs)} images, Validation: {len(valid_imgs)} images")
+
+# Define transforms (pas de resize fixe)
 train_transforms = v2.Compose([
     v2.ToImage(),
-    v2.ToDtype(torch.uint8, scale=True),  # optional, most input are already uint8 at this point
-
     v2.RandomHorizontalFlip(),
     v2.RandomVerticalFlip(),
-    v2.RandomZoomOut(),
     v2.RandomRotation(90),
-    v2.GaussianBlur(3),
-    v2.RandomAdjustSharpness(0),
+    v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
     v2.ToDtype(torch.float32, scale=True),
-    v2.Resize((224, 224)),
     v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
 valid_transforms = v2.Compose([
     v2.ToImage(),
-    v2.ToDtype(torch.uint8, scale=True),  # optional, most input are already uint8 at this point
-    v2.Resize((224, 224)),
     v2.ToDtype(torch.float32, scale=True),
     v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# Load the datasets
-train_dataset = datasets.ImageFolder(root='dataset/train', transform=train_transforms)
-valid_dataset = datasets.ImageFolder(root='dataset/valid', transform=valid_transforms)
+# Create datasets (max_size=1024 pour garder plus de détails)
+train_dataset = OSDataset(train_imgs, train_os, transform=train_transforms, max_size=1024)
+valid_dataset = OSDataset(valid_imgs, valid_os, transform=valid_transforms, max_size=1024)
 
-# Data loaders
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
-
-
-# Compute class weights based on the training dataset
-class_counts = np.bincount(train_dataset.targets)  # Count number of samples for each class
-class_weights = 1.0 / class_counts  # Inverse of class frequency
-class_weights = class_weights / class_weights.sum()  # Normalize weights
-class_weights_tensor = torch.FloatTensor(class_weights).to(device)  # Move weights to the GPU if available
+# Data loaders avec collate_fn pour gérer les tailles variables
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                          collate_fn=collate_fn, num_workers=2)
+valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, 
+                          collate_fn=collate_fn, num_workers=2)
 
 
-# Use a pre-trained model (ResNet18)
-model = models.resnet18(weights='IMAGENET1K_V1')
-# Modify the final layer to classify two classes
-# Customize the fully connected (FC) layer
-model.fc = nn.Sequential(
-    nn.Linear(model.fc.in_features, 512),
-    nn.ReLU(),
-    nn.Dropout(0.5),
-    nn.Linear(512, 256),
-    nn.ReLU(),
-    nn.Dropout(0.5),
-    nn.Linear(256, 128),
-    nn.ReLU(),
-    nn.Dropout(0.5),
-    nn.Linear(128, 64),
-    nn.ReLU(),
-    nn.Dropout(0.5),
-    nn.Linear(64, num_classes)  # num_classes = 2 for binary classification
-)
-model = model.to(device)
+# Modèle ResNet pour la régression avec support de tailles variables
+class ResNetRegression(nn.Module):
+    def __init__(self):
+        super(ResNetRegression, self).__init__()
+        # Charger ResNet50 pré-entraîné (plus profond que ResNet18)
+        resnet = models.resnet50(weights='IMAGENET1K_V1')
+        
+        # Retirer la couche fc et avgpool originales
+        self.features = nn.Sequential(*list(resnet.children())[:-2])
+        
+        # Pooling adaptatif pour gérer différentes tailles d'entrée
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Nouvelle tête pour la régression
+        self.regressor = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(2048, 512),  # ResNet50 a 2048 features
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1)  # Sortie unique pour la régression
+        )
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = self.adaptive_pool(x)
+        x = self.regressor(x)
+        return x.squeeze(1)  # Shape: (batch_size,)
 
-# Loss function and optimizer
-criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
 
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+model = ResNetRegression().to(device)
+print(f"Modèle ResNet50 chargé pour régression")
 
-best_accuracy = 0.0
-best_f1 = 0.0
+# Loss function et optimizer pour la régression
+criterion = nn.MSELoss()  # Mean Squared Error pour la régression
+optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+
+best_mae = float('inf')
+
+# Listes pour tracer les courbes
+train_losses = []
+valid_maes = []
 
 # Training loop
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
-
+    
     train_loader_tqdm = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch")
-
-    for inputs, labels in train_loader_tqdm:
-        inputs, labels = inputs.to(device), labels.to(device)
-
+    
+    for inputs, targets in train_loader_tqdm:
+        inputs, targets = inputs.to(device), targets.to(device)
+        
         # Zero the parameter gradients
         optimizer.zero_grad()
-
+        
         # Forward pass
         outputs = model(inputs)
-        loss = criterion(outputs, labels)
-
+        loss = criterion(outputs, targets)
+        
         # Backward pass and optimize
         loss.backward()
         optimizer.step()
-
+        
         running_loss += loss.item()
         train_loader_tqdm.set_postfix(loss=running_loss/len(train_loader))
-
-
-    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}')
-
+    
+    avg_train_loss = running_loss / len(train_loader)
+    train_losses.append(avg_train_loss)
+    print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}')
+    
     # Validation
     model.eval()
-    correct = 0
-    total = 0
-    TP, TN, FP, FN = 0, 0, 0, 0
     all_preds = []
-    all_labels = []
-
-
+    all_targets = []
+    
     with torch.no_grad():
         valid_loader_tqdm = tqdm(valid_loader, desc="Validating", unit="batch")
-
-        for inputs, labels in valid_loader_tqdm:
-
-            inputs, labels = inputs.to(device), labels.to(device)
+        
+        for inputs, targets in valid_loader_tqdm:
+            inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+            
+            all_preds.extend(outputs.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+    
+    # Calcul des métriques de régression
+    mae = mean_absolute_error(all_targets, all_preds)
+    mse = mean_squared_error(all_targets, all_preds)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(all_targets, all_preds)
+    
+    valid_maes.append(mae)
+    
+    print(f'Validation MAE: {mae:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}')
+    
+    # Scheduler
+    scheduler.step(mae)
+    
+    # Sauvegarder le meilleur modèle basé sur MAE
+    if mae < best_mae:
+        best_mae = mae
+        torch.save(model.state_dict(), 'best_model_regression.pth')
+        print(f'✓ Nouveau meilleur modèle sauvegardé (MAE: {mae:.4f})')
+        
+        # Créer un scatter plot des prédictions vs valeurs réelles
+        plt.figure(figsize=(10, 6))
+        plt.scatter(all_targets, all_preds, alpha=0.5)
+        plt.plot([min(all_targets), max(all_targets)], 
+                 [min(all_targets), max(all_targets)], 
+                 'r--', lw=2, label='Prédiction parfaite')
+        plt.xlabel('OS réel (années)')
+        plt.ylabel('OS prédit (années)')
+        plt.title(f'Prédictions vs Valeurs Réelles (MAE: {mae:.4f}, R²: {r2:.4f})')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig('predictions_vs_actual.png')
+        plt.close()
 
-            all_preds.extend(predicted.cpu().numpy())  # Store predictions
-            all_labels.extend(labels.cpu().numpy())    # Store actual labels
+# Tracer les courbes d'apprentissage
+plt.figure(figsize=(12, 5))
 
-            # Compute TP, TN, FP, FN for sensitivity and specificity
-            for i in range(len(labels)):
-                if labels[i] == 1 and predicted[i] == 1:
-                    TP += 1
-                elif labels[i] == 0 and predicted[i] == 0:
-                    TN += 1
-                elif labels[i] == 0 and predicted[i] == 1:
-                    FP += 1
-                elif labels[i] == 1 and predicted[i] == 0:
-                    FN += 1
-            #valid_loader_tqdm.set_postfix(loss=running_loss/len(va))
+plt.subplot(1, 2, 1)
+plt.plot(train_losses, label='Train Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss (MSE)')
+plt.title('Training Loss')
+plt.legend()
+plt.grid(True, alpha=0.3)
 
+plt.subplot(1, 2, 2)
+plt.plot(valid_maes, label='Validation MAE', color='orange')
+plt.xlabel('Epoch')
+plt.ylabel('MAE (années)')
+plt.title('Validation MAE')
+plt.legend()
+plt.grid(True, alpha=0.3)
 
+plt.tight_layout()
+plt.savefig('training_curves_regression.png')
+plt.show()
 
-    # Compute validation accuracy
-    accuracy = 100 * correct / total
-    print(f'Validation Accuracy: {accuracy:.2f}%')
-
-    # Compute F1 Score
-    f1 = f1_score(all_labels, all_preds, average='weighted')  # Weighted F1 score for imbalanced classes
-    print(f'F1 Score: {f1:.4f}')
-
-    # Save best model based on accuracy
-    if accuracy > best_accuracy:
-        best_accuracy = accuracy
-        torch.save(model.state_dict(), 'best_model_accuracy.pth')
-        print(f'New best model saved based on accuracy: {accuracy:.2f}%')
-
-    # Save best model based on F1-score
-    if f1 > best_f1:
-        best_f1 = f1
-        torch.save(model.state_dict(), 'best_model_f1.pth')
-        print(f'New best model saved based on F1-score: {f1:.4f}')
-        print('Confusion matrix')
-        # Confusion Matrix Plotting (After final epoch)
-        cm = confusion_matrix(all_labels, all_preds)
-        plt.figure(figsize=(8,6))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=valid_dataset.classes, yticklabels=valid_dataset.classes)
-        plt.xlabel('Predicted Label')
-        plt.ylabel('True Label')
-        plt.title('Confusion Matrix')
-        plt.savefig('cm.png')
-        plt.show()
-
-
-    accuracy = 100 * correct / total
-    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
-    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
-
-    print(f'Validation Accuracy: {accuracy:.2f}%')
-    print(f'Sensitivity: {sensitivity:.4f}, Specificity: {specificity:.4f}')
-
-print("Training complete.")
+print("Entraînement terminé!")
+print(f"Meilleur MAE: {best_mae:.4f}")
