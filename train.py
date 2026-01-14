@@ -9,15 +9,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from PIL import Image
+from PIL import Image, PngImagePlugin
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+# Augmenter la limite de décompression PNG pour les gros profils ICC
+PngImagePlugin.MAX_TEXT_CHUNK = 10 * (1024**2)  # 10 MB
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hyperparameters
-batch_size = 8  # Augmenté car ResNet est plus efficace que ViT
+batch_size = 8
 learning_rate = 0.0001
 num_epochs = 100
 
@@ -179,7 +182,7 @@ print(f"Modèle ResNet50 chargé pour régression")
 # Loss function et optimizer pour la régression
 criterion = nn.MSELoss()  # Mean Squared Error pour la régression
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
 best_mae = float('inf')
 
