@@ -4,6 +4,7 @@
 #$ -j y
 #$ -N dlbclv1
 cd $WORKDIR
+cd /beegfs/data/work/imvia/in156281/dlbcl
 source /beegfs/data/work/imvia/in156281/dlbcl/venv/bin/activate
 module load python
 export PYTHONPATH=/work/imvia/in156281/dlbcl/venv/lib/python3.9/site-packages:$PYTHONPATH
