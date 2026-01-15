@@ -20,7 +20,7 @@ PngImagePlugin.MAX_TEXT_CHUNK = 10 * (1024**2)  # 10 MB
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Hyperparameters
-batch_size = 4
+batch_size = 2
 learning_rate = 0.0001
 num_epochs = 100
 
@@ -28,7 +28,7 @@ num_epochs = 100
 class OSDataset(Dataset):
     """Dataset personnalise pour la prediction de l'Overall Survival"""
     
-    def __init__(self, image_paths, os_values, transform=None, max_size=1024):
+    def __init__(self, image_paths, os_values, transform=None, max_size=2048):
         self.image_paths = image_paths
         self.os_values = os_values
         self.transform = transform
