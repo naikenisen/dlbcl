@@ -106,12 +106,18 @@ for img_path in image_files:
 print(f"Nombre d'images avec donnees OS: {len(valid_images)}")
 print(f"OS min: {min(os_values):.2f}, OS max: {max(os_values):.2f}, OS moyen: {np.mean(os_values):.2f}")
 
-# Split train/validation
-train_imgs, valid_imgs, train_os, valid_os = train_test_split(
+# Split train/validation/test (60/20/20)
+# First split: separate test set (20%)
+train_valid_imgs, test_imgs, train_valid_os, test_os = train_test_split(
     valid_images, os_values, test_size=0.2, random_state=42
 )
 
-print(f"Train: {len(train_imgs)} images, Validation: {len(valid_imgs)} images")
+# Second split: split remaining into train (75% of 80% = 60%) and validation (25% of 80% = 20%)
+train_imgs, valid_imgs, train_os, valid_os = train_test_split(
+    train_valid_imgs, train_valid_os, test_size=0.25, random_state=42
+)
+
+print(f"Train: {len(train_imgs)} images, Validation: {len(valid_imgs)} images, Test: {len(test_imgs)} images")
 
 # Define transforms (pas de resize fixe)
 train_transforms = v2.Compose([
@@ -133,12 +139,15 @@ valid_transforms = v2.Compose([
 # Create datasets (max_size=1024 pour garder plus de details)
 train_dataset = OSDataset(train_imgs, train_os, transform=train_transforms, max_size=1024)
 valid_dataset = OSDataset(valid_imgs, valid_os, transform=valid_transforms, max_size=1024)
+test_dataset = OSDataset(test_imgs, test_os, transform=valid_transforms, max_size=1024)
 
 # Data loaders avec collate_fn pour gerer les tailles variables
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
                           collate_fn=collate_fn, num_workers=2)
 valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, 
                           collate_fn=collate_fn, num_workers=2)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, 
+                         collate_fn=collate_fn, num_workers=2)
 
 
 # Modele ResNet pour la regression avec support de tailles variables
@@ -291,4 +300,54 @@ plt.savefig('training_curves_regression.png')
 plt.show()
 
 print("Entrainement termine")
-print(f"Meilleur MAE: {best_mae:.4f}")
+print(f"Meilleur MAE sur validation: {best_mae:.4f}")
+
+# Final evaluation on test set
+print("\n" + "="*50)
+print("Evaluation finale sur l'ensemble de test")
+print("="*50)
+
+# Load best model
+model.load_state_dict(torch.load('best_model_regression.pth'))
+model.eval()
+
+test_preds = []
+test_targets = []
+
+with torch.no_grad():
+    test_loader_tqdm = tqdm(test_loader, desc="Testing", unit="batch")
+    
+    for inputs, targets in test_loader_tqdm:
+        inputs, targets = inputs.to(device), targets.to(device)
+        outputs = model(inputs)
+        
+        test_preds.extend(outputs.cpu().numpy())
+        test_targets.extend(targets.cpu().numpy())
+
+# Calculate test metrics
+test_mae = mean_absolute_error(test_targets, test_preds)
+test_mse = mean_squared_error(test_targets, test_preds)
+test_rmse = np.sqrt(test_mse)
+test_r2 = r2_score(test_targets, test_preds)
+
+print(f"\nResultats sur l'ensemble de test:")
+print(f"MAE: {test_mae:.4f} annees")
+print(f"RMSE: {test_rmse:.4f} annees")
+print(f"R²: {test_r2:.4f}")
+
+# Create scatter plot for test predictions
+plt.figure(figsize=(10, 6))
+plt.scatter(test_targets, test_preds, alpha=0.5)
+plt.plot([min(test_targets), max(test_targets)], 
+         [min(test_targets), max(test_targets)], 
+         'r--', lw=2, label='Prediction parfaite')
+plt.xlabel('OS reel (annees)')
+plt.ylabel('OS predit (annees)')
+plt.title(f'Predictions vs Valeurs Reelles - Ensemble de Test\n(MAE: {test_mae:.4f}, R²: {test_r2:.4f})')
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('test_predictions_vs_actual.png')
+plt.close()
+
+print(f"\nGraphique des predictions de test sauvegarde: test_predictions_vs_actual.png")
