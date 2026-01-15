@@ -330,10 +330,10 @@ test_mse = mean_squared_error(test_targets, test_preds)
 test_rmse = np.sqrt(test_mse)
 test_r2 = r2_score(test_targets, test_preds)
 
-print(f"\nResultats sur l'ensemble de test:")
+print(f"Resultats sur l'ensemble de test:")
 print(f"MAE: {test_mae:.4f} annees")
 print(f"RMSE: {test_rmse:.4f} annees")
-print(f"R²: {test_r2:.4f}")
+print(f"R2: {test_r2:.4f}")
 
 # Create scatter plot for test predictions
 plt.figure(figsize=(10, 6))
@@ -343,11 +343,11 @@ plt.plot([min(test_targets), max(test_targets)],
          'r--', lw=2, label='Prediction parfaite')
 plt.xlabel('OS reel (annees)')
 plt.ylabel('OS predit (annees)')
-plt.title(f'Predictions vs Valeurs Reelles - Ensemble de Test\n(MAE: {test_mae:.4f}, R²: {test_r2:.4f})')
+plt.title(f'Predictions vs Valeurs Reelles - Ensemble de Test (MAE: {test_mae:.4f}, R2: {test_r2:.4f})')
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.savefig('test_predictions_vs_actual.png')
 plt.close()
 
-print(f"\nGraphique des predictions de test sauvegarde: test_predictions_vs_actual.png")
+print(f"Graphique des predictions de test sauvegarde: test_predictions_vs_actual.png")
